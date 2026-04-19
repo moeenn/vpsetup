@@ -50,7 +50,7 @@ class Config:
 
     @classmethod
     def default_config(cls) -> Self:
-        user = "server_admin"
+        user = "server_adm"
         return cls(
             server_user=user,
             server_host="example.com",
@@ -244,6 +244,9 @@ def action_add_user(config: Config) -> None:
         return
 
     um = UserManager()
+    if um.user_exists(config.server_user):
+        raise Exception(f"user '{config.server_user}' already exists")
+
     um.add_user(config.server_user)
     if confirm("Add user to sudo group?"):
         um.add_to_sudoers(config.server_user)
