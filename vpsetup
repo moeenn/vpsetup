@@ -1,0 +1,303 @@
+#! /bin/python3
+
+import os
+import subprocess
+import sys
+from dataclasses import dataclass
+from enum import Enum
+from typing import Callable, Self
+
+# ------------------------------------------------------------------------------
+#
+#  constants and types.
+#
+# ------------------------------------------------------------------------------
+
+
+DEBUG = True
+COLOR_RESET = "\033[0m"
+COLOR_BLACK = "\033[30m"
+COLOR_RED = "\033[31m"
+COLOR_BLUE = "\033[34m"
+COLOR_YELLOW = "\033[33m"
+
+
+class OpenPortKind(Enum):
+    Allow = "allow"
+    Limit = "limit"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass
+class OpenPort:
+    port: int
+    kind: OpenPortKind
+    desc: str
+
+
+@dataclass
+class Config:
+    server_user: str
+    server_host: str
+    app_port: int
+    app_dir: str
+    app_service_name: str
+    base_packages: list[str]
+    open_ports: list[OpenPort]
+
+    @classmethod
+    def default_config(cls) -> Self:
+        return cls(
+            server_user="server_admin",
+            server_host="example.com",
+            app_port=3000,
+            app_dir=os.path.join(os.getcwd(), "admin", "app"),
+            app_service_name="app",
+            base_packages=["rsync", "kakoune"],
+            open_ports=[
+                OpenPort(port=22, kind=OpenPortKind.Limit, desc="SSH default port"),
+                OpenPort(port=80, kind=OpenPortKind.Allow, desc="HTTP port"),
+                OpenPort(port=443, kind=OpenPortKind.Allow, desc="HTTPS port"),
+            ],
+        )
+
+
+@dataclass
+class MenuItem:
+    text: str
+    action: Callable[[Config], None]
+
+
+# ------------------------------------------------------------------------------
+#
+# helpers functions.
+#
+# ------------------------------------------------------------------------------
+
+
+def execute(cmd: list[str], silent: bool = False) -> bool:
+    if not silent:
+        print(f"{COLOR_BLUE}Executing: {' '.join(cmd)} {COLOR_RESET}")
+
+    if DEBUG:
+        return True
+    else:
+        result = subprocess.run(cmd, capture_output=silent)
+        return result.returncode == 0
+
+
+def confirm(message: str) -> bool:
+    sel = input(f"{COLOR_YELLOW}{message} [Y/n]: {COLOR_RESET}")
+    if sel in ["y", "Y"]:
+        return True
+    if sel in ["n", "N"]:
+        return False
+    raise Exception(f"invalid input: {sel}")
+
+
+def print_menu(menu: list[MenuItem]) -> None:
+    print(f"{COLOR_YELLOW}Please select an option:")
+    for index, item in enumerate(menu):
+        print(f"{index + 1:2}: {item.text}")
+    print(f" q: Quit{COLOR_RESET}")
+
+
+def get_menu_selection(max_n: int) -> int:
+    sel = input(f"{COLOR_YELLOW}Selection: {COLOR_RESET}").strip()
+    if sel in ["q", "Q"]:
+        print(f"{COLOR_BLACK}Exiting...{COLOR_RESET}")
+        sys.exit(1)
+
+    parsed: int = 0
+    try:
+        parsed = int(sel)
+    except Exception:
+        raise Exception(f"{sel} is not a valid number")
+
+    if parsed < 1 or parsed > max_n:
+        raise Exception(f"{sel} is not a valid selection")
+
+    return parsed
+
+
+# ------------------------------------------------------------------------------
+#
+#  config related classes.
+#
+# ------------------------------------------------------------------------------
+
+
+class AptPackageManager:
+    def is_installed(self) -> bool:
+        return execute(["which", "apt-get"], silent=True)
+
+    def update(self) -> bool:
+        if not execute(["sudo", "apt-get", "update", "-y"]):
+            return False
+        if not execute(["sudo", "apt-get", "upgrade", "-y"]):
+            return False
+        if not execute(["sudo", "apt-get", "dist-upgrade", "-y"]):
+            return False
+        return True
+
+    def install(self, pkgs: list[str]) -> bool:
+        cmd = ["sudo", "apt-get", "install", "-y"] + pkgs
+        return execute(cmd)
+
+
+class UserManager:
+    def add_user(self, user) -> None:
+        cmd = ["sudo", "useradd", user]
+        if not execute(cmd):
+            raise Exception(f"failed to add user: {user}")
+
+        cmd = ["sudo", "passwd", user]
+        if not execute(cmd):
+            raise Exception("failed to set password for user")
+
+    def add_to_sudoers(self, user) -> None:
+        cmd = ["sudo", "usermod", "-aG", "sudo", user]
+        if not execute(cmd):
+            raise Exception("failed to add user to sudo group")
+
+
+class FirewallManager:
+    def is_installed(self) -> bool:
+        return execute(["which", "ufw"], silent=True)
+
+    def install_firewall(self) -> None:
+        cmd = ["sudo", "apt-get", "install", "-y", "ufw"]
+        execute(cmd)
+
+    def enable(self) -> None:
+        cmd = ["sudo", "ufw", "enable"]
+        execute(cmd)
+
+    def configure_ports(self, ports: list[OpenPort]) -> None:
+        for port in ports:
+            cmd = ["sudo", "ufw", str(port.kind), str(port.port)]
+            execute(cmd)
+
+
+class DockerManager:
+    def is_installed(self) -> bool:
+        return execute(["which", "docker"], silent=True)
+
+    def install_docker(self, pm: AptPackageManager) -> None:
+        pkgs = ["docker.io", "docker-compose", "python3-setuptools"]
+        if not pm.install(pkgs):
+            raise Exception("failed to install docker")
+
+    def add_docker_group(self) -> None:
+        cmd = ["sudo", "groupadd", "docker", "&2>/dev/null"]
+        if not execute(cmd):
+            raise Exception("failed to add docker group")
+
+    def add_user_to_docker_group(self, user: str) -> None:
+        cmd = ["sudo", "usermod", "-aG", "docker", user]
+        if not execute(cmd):
+            raise Exception("failed to add user to docker group")
+
+
+# ------------------------------------------------------------------------------
+#
+#  action definitions.
+#
+# ------------------------------------------------------------------------------
+
+
+def action_update_system(_config: Config) -> None:
+    pm = AptPackageManager()
+    if not pm.update():
+        raise Exception("failed to update system")
+
+
+def action_install_base_packages(config: Config) -> None:
+    print(f"{COLOR_YELLOW}The following packages are going to be installed:")
+    for pkg in config.base_packages:
+        print(f"- {pkg}")
+
+    if not confirm("Continue?"):
+        return
+
+    pm = AptPackageManager()
+    if not pm.install(config.base_packages):
+        raise Exception("failed to install base packages")
+
+
+def action_add_user(config: Config) -> None:
+    if not confirm(f"Add '{config.server_user}' as new user?"):
+        return
+
+    um = UserManager()
+    um.add_user(config.server_user)
+    if confirm("Add user to sudo group?"):
+        um.add_to_sudoers(config.server_user)
+
+
+def action_configure_ports(config: Config) -> None:
+    fwm = FirewallManager()
+    if not fwm.is_installed():
+        if confirm("Firewall if currently not installed. Install it now?"):
+            fwm.install_firewall()
+
+    print(f"{COLOR_BLUE}The following ports will be enabled: ")
+    for port in config.open_ports:
+        print(f"{port.port:4}: {port.desc}")
+
+    if confirm("Continue?"):
+        fwm.configure_ports(config.open_ports)
+
+
+def action_configure_docker(config: Config) -> None:
+    dm = DockerManager()
+    if not dm.is_installed():
+        if confirm("Docker if not installed. Install it now?"):
+            pm = AptPackageManager()
+            dm.install_docker(pm)
+
+    if confirm("Add server user to docker group?"):
+        dm.add_docker_group()
+        dm.add_user_to_docker_group(config.server_user)
+
+
+def action_set_utc_timezone(_config: Config) -> None:
+    cmd = ["sudo", "timedatectl", "set-timezone", "UTC"]
+    if not execute(cmd):
+        raise Exception("failed to set timezone to UTC")
+
+
+# ------------------------------------------------------------------------------
+#
+#  entry-point.
+#
+# ------------------------------------------------------------------------------
+
+
+def main() -> None:
+    cfg = Config.default_config()
+    menu: list[MenuItem] = [
+        MenuItem(text="Update system", action=action_update_system),
+        MenuItem(text="Install base packages", action=action_install_base_packages),
+        MenuItem(text="Add user", action=action_add_user),
+        MenuItem(text="Configure Docker", action=action_configure_docker),
+        MenuItem(text="Configure ports", action=action_configure_ports),
+        MenuItem(text="Set Timezone (UTC)", action=action_set_utc_timezone),
+    ]
+
+    print_menu(menu)
+    selection = get_menu_selection(max_n=len(menu))
+    selected_item = menu[selection - 1]
+    print(f"{COLOR_BLUE}Executing: {selected_item.text}.{COLOR_RESET}")
+    selected_item.action(cfg)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n{COLOR_BLACK}ctrl+c: exiting...{COLOR_RESET}")
+    except Exception as e:
+        print(f"{COLOR_RED}error: {str(e)}.{COLOR_RESET}")
