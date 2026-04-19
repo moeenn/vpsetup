@@ -49,11 +49,12 @@ class Config:
 
     @classmethod
     def default_config(cls) -> Self:
+        user = "server_admin"
         return cls(
-            server_user="server_admin",
+            server_user=user,
             server_host="example.com",
             app_port=3000,
-            app_dir=os.path.join(os.getcwd(), "admin", "app"),
+            app_dir=os.path.join("/", "home", user, "app"),
             app_service_name="app",
             base_packages=["rsync", "kakoune"],
             open_ports=[
@@ -129,7 +130,7 @@ def get_menu_selection(max_n: int) -> int:
 # ------------------------------------------------------------------------------
 
 
-class AptPackageManager:
+class PackageManager:
     def is_installed(self) -> bool:
         return execute(["which", "apt-get"], silent=True)
 
@@ -185,7 +186,7 @@ class DockerManager:
     def is_installed(self) -> bool:
         return execute(["which", "docker"], silent=True)
 
-    def install_docker(self, pm: AptPackageManager) -> None:
+    def install_docker(self, pm: PackageManager) -> None:
         pkgs = ["docker.io", "docker-compose", "python3-setuptools"]
         if not pm.install(pkgs):
             raise Exception("failed to install docker")
@@ -209,7 +210,7 @@ class DockerManager:
 
 
 def action_update_system(_config: Config) -> None:
-    pm = AptPackageManager()
+    pm = PackageManager()
     if not pm.update():
         raise Exception("failed to update system")
 
@@ -222,7 +223,7 @@ def action_install_base_packages(config: Config) -> None:
     if not confirm("Continue?"):
         return
 
-    pm = AptPackageManager()
+    pm = PackageManager()
     if not pm.install(config.base_packages):
         raise Exception("failed to install base packages")
 
@@ -255,7 +256,7 @@ def action_configure_docker(config: Config) -> None:
     dm = DockerManager()
     if not dm.is_installed():
         if confirm("Docker if not installed. Install it now?"):
-            pm = AptPackageManager()
+            pm = PackageManager()
             dm.install_docker(pm)
 
     if confirm("Add server user to docker group?"):
