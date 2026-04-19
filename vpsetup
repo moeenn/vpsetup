@@ -1,6 +1,7 @@
 #! /bin/python3
 
 import os
+import pwd
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -149,6 +150,13 @@ class PackageManager:
 
 
 class UserManager:
+    def user_exists(self, user: str) -> bool:
+        try:
+            pwd.getpwnam(user)
+            return True
+        except Exception:
+            return False
+
     def add_user(self, user) -> None:
         cmd = ["sudo", "useradd", user]
         if not execute(cmd):
@@ -170,16 +178,19 @@ class FirewallManager:
 
     def install_firewall(self) -> None:
         cmd = ["sudo", "apt-get", "install", "-y", "ufw"]
-        execute(cmd)
+        if not execute(cmd):
+            raise Exception("failed to install firewall")
 
     def enable(self) -> None:
         cmd = ["sudo", "ufw", "enable"]
-        execute(cmd)
+        if not execute(cmd):
+            raise Exception("failed to enable firewall")
 
     def configure_ports(self, ports: list[OpenPort]) -> None:
         for port in ports:
             cmd = ["sudo", "ufw", str(port.kind), str(port.port)]
-            execute(cmd)
+            if not execute(cmd):
+                raise Exception(f"failed to open port: {port.port}")
 
 
 class DockerManager:
@@ -251,6 +262,9 @@ def action_configure_ports(config: Config) -> None:
     if confirm("Continue?"):
         fwm.configure_ports(config.open_ports)
 
+    if confirm("Enable firewall now?"):
+        fwm.enable()
+
 
 def action_configure_docker(config: Config) -> None:
     dm = DockerManager()
@@ -291,7 +305,7 @@ def main() -> None:
     print_menu(menu)
     selection = get_menu_selection(max_n=len(menu))
     selected_item = menu[selection - 1]
-    print(f"{COLOR_BLUE}Executing: {selected_item.text}.{COLOR_RESET}")
+    print(f"{COLOR_BLUE}Executing action: {selected_item.text}.{COLOR_RESET}")
     selected_item.action(cfg)
 
 
