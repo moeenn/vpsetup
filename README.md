@@ -4,7 +4,10 @@ Quickly setup fresh virtual private servers (VPS). This script has no external d
 
 ## TODO:
 
-- [ ] Setup SystemD service for the application.
+- [x] Shell: Enhance bash config. (add aliases etc.)
+- [ ] Setup SystemD service for the application. (from template)
+- [ ] Config: Dump default.
+- [ ] Config: Load config file.
 - [ ] Setup Nginx.
 - [ ] Disable password login.
 - [ ] Enable ssh-key logins.

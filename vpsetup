@@ -5,7 +5,6 @@ import pwd
 import subprocess
 import sys
 from dataclasses import dataclass
-from enum import Enum
 from typing import Callable, Self
 
 # ------------------------------------------------------------------------------
@@ -23,19 +22,15 @@ COLOR_BLUE = "\033[34m"
 COLOR_YELLOW = "\033[33m"
 
 
-class OpenPortKind(Enum):
-    Allow = "allow"
-    Limit = "limit"
-
-    def __str__(self) -> str:
-        return self.value
-
-
 @dataclass
 class OpenPort:
     port: int
-    kind: OpenPortKind
     desc: str
+
+
+@dataclass
+class SSHConfig:
+    port: int
 
 
 @dataclass
@@ -46,22 +41,23 @@ class Config:
     app_dir: str
     app_service_name: str
     base_packages: list[str]
+    ssh: SSHConfig
     open_ports: list[OpenPort]
 
     @classmethod
     def default_config(cls) -> Self:
-        user = "server_adm"
+        user = "moeenn"
         return cls(
             server_user=user,
             server_host="example.com",
             app_port=3000,
             app_dir=os.path.join("/", "home", user, "app"),
             app_service_name="app",
-            base_packages=["rsync", "kakoune"],
+            base_packages=["rsync", "kakoune", "curl"],
+            ssh=SSHConfig(port=22),
             open_ports=[
-                OpenPort(port=22, kind=OpenPortKind.Limit, desc="SSH default port"),
-                OpenPort(port=80, kind=OpenPortKind.Allow, desc="HTTP port"),
-                OpenPort(port=443, kind=OpenPortKind.Allow, desc="HTTPS port"),
+                OpenPort(port=80, desc="HTTP port"),
+                OpenPort(port=443, desc="HTTPS port"),
             ],
         )
 
@@ -86,8 +82,11 @@ def execute(cmd: list[str], silent: bool = False) -> bool:
     if DEBUG:
         return True
     else:
-        result = subprocess.run(cmd, capture_output=silent)
-        return result.returncode == 0
+        try:
+            result = subprocess.run(cmd, capture_output=silent)
+            return result.returncode == 0
+        except Exception:
+            return False
 
 
 def confirm(message: str) -> bool:
@@ -186,11 +185,39 @@ class FirewallManager:
         if not execute(cmd):
             raise Exception("failed to enable firewall")
 
-    def configure_ports(self, ports: list[OpenPort]) -> None:
+    def allow_ports(self, ports: list[OpenPort]) -> None:
         for port in ports:
-            cmd = ["sudo", "ufw", str(port.kind), str(port.port)]
+            cmd = ["sudo", "ufw", "allow", str(port.port)]
             if not execute(cmd):
                 raise Exception(f"failed to open port: {port.port}")
+
+    def limit_port(self, port: int) -> None:
+        cmd = ["sudo", "ufw", "limit", str(port)]
+        if not execute(cmd):
+            raise Exception(f"failed to limit port :{port}")
+
+
+class SSHManager:
+    def is_installed(self) -> bool:
+        cmd = ["which", "ssh"]
+        return execute(cmd, silent=True)
+
+    def install_server(self, pm: PackageManager) -> None:
+        pkgs = ["openssh-server"]
+        if not pm.install(pkgs):
+            raise Exception("failed to install openssh server")
+
+    def enable_server(self) -> None:
+        if not execute(["sudo", "systemctl", "enable", "ssh"]):
+            raise Exception("failed to enable ssh service")
+
+        if not execute(["sudo", "systemctl", "start", "ssh"]):
+            raise Exception("failed to start ssh service")
+
+    def restart_service(self) -> None:
+        cmd = ["sudo", "systemctl", "restart", "ssh"]
+        if not execute(cmd):
+            raise Exception("failed to restart ssh service")
 
 
 class DockerManager:
@@ -211,6 +238,29 @@ class DockerManager:
         cmd = ["sudo", "usermod", "-aG", "docker", user]
         if not execute(cmd):
             raise Exception("failed to add user to docker group")
+
+
+class BashManager:
+    __lines = """
+shopt -s autocd
+shopt -s cdspell
+shopt -s checkwinsize
+shopt -s dotglob
+shopt -s expand_aliases
+shopt -s nocaseglob
+bind '"\\e[Z":menu-complete' # use Shift-tab to select tab suggestion.
+
+alias :q="exit"
+alias :Q="exit"
+alias :w='which'
+alias ls="ls -aC --color=never"
+alias reload="source ~/.bashrc"
+    """
+
+    def update_config(self, user: str) -> None:
+        config_path = os.path.join("/", "home", user, ".bashrc")
+        with open(config_path, "a") as file:
+            file.write(self.__lines)
 
 
 # ------------------------------------------------------------------------------
@@ -263,9 +313,19 @@ def action_configure_ports(config: Config) -> None:
         print(f"{port.port:4}: {port.desc}")
 
     if confirm("Continue?"):
-        fwm.configure_ports(config.open_ports)
+        fwm.allow_ports(config.open_ports)
 
-    if confirm("Enable firewall now?"):
+
+def action_enable_firewall(_config: Config) -> None:
+    fwm = FirewallManager()
+    if not fwm.is_installed():
+        raise Exception(
+            "Firewall is not installed yet. Please perform the firewall configuration step before enabling the firewall"
+        )
+
+    if confirm(
+        "WARNING: The firewall should only be enabled after ssh has been configured. Continue with this step?"
+    ):
         fwm.enable()
 
 
@@ -287,6 +347,21 @@ def action_set_utc_timezone(_config: Config) -> None:
         raise Exception("failed to set timezone to UTC")
 
 
+def action_configure_ssh(config: Config) -> None:
+    pm = PackageManager()
+    sm = SSHManager()
+    if not sm.is_installed():
+        sm.install_server(pm)
+
+
+def action_update_bash_config(config: Config) -> None:
+    user = config.server_user
+    print(f"{COLOR_BLUE}updating {user} bash config{COLOR_RESET}")
+    if not DEBUG:
+        bm = BashManager()
+        bm.update_config(user)
+
+
 # ------------------------------------------------------------------------------
 #
 #  entry-point.
@@ -302,7 +377,10 @@ def main() -> None:
         MenuItem(text="Add user", action=action_add_user),
         MenuItem(text="Configure Docker", action=action_configure_docker),
         MenuItem(text="Configure ports", action=action_configure_ports),
+        MenuItem(text="Configure SSH", action=action_configure_ssh),
+        MenuItem(text="Enable Firewall", action=action_enable_firewall),
         MenuItem(text="Set Timezone (UTC)", action=action_set_utc_timezone),
+        MenuItem(text="Update shell config (bash)", action=action_update_bash_config),
     ]
 
     print_menu(menu)
