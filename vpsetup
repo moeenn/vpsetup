@@ -258,9 +258,10 @@ alias reload="source ~/.bashrc"
     """
 
     def update_config(self, user: str) -> None:
-        config_path = os.path.join("/", "home", user, ".bashrc")
-        with open(config_path, "a") as file:
-            file.write(self.__lines)
+        if not DEBUG:
+            config_path = os.path.join("/", "home", user, ".bashrc")
+            with open(config_path, "a") as file:
+                file.write(self.__lines)
 
 
 # ------------------------------------------------------------------------------
@@ -356,10 +357,15 @@ def action_configure_ssh(config: Config) -> None:
 
 def action_update_bash_config(config: Config) -> None:
     user = config.server_user
+    um = UserManager()
+    if not um.user_exists(user):
+        raise Exception(
+            f"The user '{user}' does not exist. Please complete the user creation process to perform this action."
+        )
+
     print(f"{COLOR_BLUE}updating {user} bash config{COLOR_RESET}")
-    if not DEBUG:
-        bm = BashManager()
-        bm.update_config(user)
+    bm = BashManager()
+    bm.update_config(user)
 
 
 # ------------------------------------------------------------------------------
